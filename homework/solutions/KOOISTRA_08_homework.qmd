@@ -1,0 +1,247 @@
+---
+title: "session08 - homework"
+format: html
+editor: visual
+date: 2025-07-17
+author: Timo Roettger
+execute:
+  error: false
+  warning: false
+  message: false
+  cache: true
+bibliography: ../resources/bibliography.bib
+---
+
+# Preamble: Loading packages and configuration
+
+```{r}
+#| label: data_and_libraries
+#| echo: false
+
+# just run this code chunk
+# function to ignoring the setting of the relative path below when knitting
+run_if_not_knitting <- function(expr) {
+  if (!isTRUE(getOption("knitr.in.progress"))) {
+    eval(expr)
+  }
+}
+
+# nifty code using the pacman package
+# it checks if the packages specified below are installed, if not, they will be installed, if yes, they will be loaded
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(rstudioapi, tidyverse, tidybayes, brms, bayesplot, bayestestR, modelr)
+
+# set the current working directory to the one where this file is
+run_if_not_knitting(current_working_dir <- dirname(rstudioapi::getActiveDocumentContext()$path))
+run_if_not_knitting(setwd(current_working_dir))
+
+# options to increase efficiency of brms models (optional)
+#options(brms.backend = "cmdstanr")
+#options(mc.cores = parallel::detectCores())
+
+```
+
+# Exercise
+
+We will be re-analyzing the data from @winter2013making.
+
+```{r}
+#| label: preprocessing_sim
+
+# Load our datasets
+sim <- read_csv("../data/linguistic_similarity.csv") |> 
+  mutate(Sem = as.factor(Sem),
+         Phon = as.factor(Phon))
+sim
+
+```
+
+We will now retrace the original article's complete analysis. In their original analysis, they were interested in whether (a) semantic similarity between cities, (b) phonological similarity between cities, and (c) their interaction affects how close/far apart participants draw the cities.
+
+## (a) Specify Priors
+
+Specify the model formula and appropriate weakly informative priors for all relevant predictors. Contrast-code the predictors.
+
+```{r}
+#| label: model_formula_sim
+  
+# -----------------------------------------------
+# CONTRAST CODING PREDICTORS
+  
+sim$Sem_Con  <- ifelse(sim$Sem == "Similar",  0.5, -0.5) #semantic similarity
+sim$Phon_Con <- ifelse(sim$Phon == "Similar", 0.5, -0.5) #phonetic similarity
+
+
+# -----------------------------------------------
+#DEFINE FORMULA
+mdl_formula_sim = bf(Distance ~ Sem_Con * Phon_Con)
+
+
+# -----------------------------------------------
+#GET PRIORS
+get_prior(mdl_formula_sim, data = sim)
+
+# -----------------------------------------------
+#SPECIFY ROUGH-ISH PRIORS 
+
+sim_my_priors <- c(
+  prior(normal(100, 50), class = "Intercept"),  # somewhat around predicted "blind" mean
+  prior(normal(0, 30), class = "b"),            # effects likely smaller than total scale
+  prior(student_t(3, 0, 50), class = "sigma"))   # robust prior for residual SD
+
+# -----------------------------------------------
+
+
+```
+
+## (b) Run the appropriate model for the research question
+
+```{r}
+#| label: model_sim
+
+pri_model <- brm(
+  Distance ~ Sem_Con * Phon_Con,
+  data = sim,
+  prior = sim_my_priors,
+  family = gaussian(),
+  chains = 4,
+  cores = 4,
+  iter = 2000)
+
+
+```
+
+## (c) Posterior predictive check
+
+Check the overall model fit with posterior predictive checks. If the model does not fit the data well, fix the problem (check `06_homework_solutions.qmd` for inspiration).
+
+```{r}
+#| label: model_fit
+
+
+pp_check(pri_model, ndraws = 100)
+
+
+```
+
+## (d) Assess sampling diagnostics
+
+Check that chains are reasonably mixed and that sampling yielded a sufficient number of effective sample size. If there are issues, address them accordingly.
+
+```{r}
+#| label: sampling_diagnostics
+
+mcmc_trace(as_draws_df(pri_model),
+           pars = c("b_Intercept", "b_Sem_Con", "b_Phon_Con", "b_Sem_Con:Phon_Con"))
+
+mcmc_dens_overlay(pri_model,
+ pars = c("b_Intercept", "b_Sem_Con", "b_Phon_Con", "b_Sem_Con:Phon_Con"))
+
+pri_model
+
+```
+
+## (e) Interpret the results
+
+Now interpret the model relative to the research question and describe uncertainty, visualize posteriors, calculate posterior probabilities of direction, and calculate Bayes Factors for evidence for and against the posterior coefficients being point zero.
+
+(Note: When you want to extract interaction terms like `b_Sem1:Phon1`, you have to put single quotation marks around them because R struggles with interpreting the colon)
+
+```{r}
+#| label: interpret_sim
+
+#get posterior
+
+
+posteriors <- pri_model |> 
+  spread_draws(
+    b_Intercept,
+    b_Sem_Con,
+    b_Phon_Con,
+    `b_Sem_Con:Phon_Con`
+  ) |> 
+  select(
+    b_Intercept,
+    b_Sem_Con,
+    b_Phon_Con,
+    `b_Sem_Con:Phon_Con`
+  )
+#uncertainty
+pri_model
+
+#visual posteriors
+
+pri_model |> 
+  spread_draws(
+    b_Intercept,
+    b_Sem_Con,
+    b_Phon_Con,
+    `b_Sem_Con:Phon_Con`
+  ) |> 
+  
+  pivot_longer(
+    cols = everything(),
+    names_to = "parameter",
+    values_to = "value"
+  ) |> 
+  
+  ggplot(aes(x = value, y = parameter)) +
+  stat_halfeye(fill = "darkorchid3", alpha = 0.4) +
+  geom_vline(xintercept = 0, lty = "dashed") +
+  theme_minimal()
+
+
+
+xmdl_quant_priors <- brm(
+  formula = mdl_formula_sim,
+  family = gaussian(),
+  prior = sim_my_priors,
+  sample_prior = "only",
+  data = sim,
+  chains = 4,
+  cores = 4, 
+  iter = 2000,
+  warmup = 1000,
+  thin = 1,
+  seed = 42
+)
+
+p_direction(posteriors)
+
+priors <- pri_model |> 
+  spread_draws(
+    b_Intercept,
+    b_Sem_Con,
+    b_Phon_Con,
+    `b_Sem_Con:Phon_Con`
+  ) |> 
+  select(
+    b_Intercept,
+    b_Sem_Con,
+    b_Phon_Con,
+    `b_Sem_Con:Phon_Con`
+  )
+
+bayesfactor_parameters(posteriors, priors, direction = "two-sided", null = 0)
+```
+
+## (g) Write up your entire analysis:
+
+First, I modeled perceived distance between cities as a function of semantic similarity, phonological similarity, and their interaction using a Bayesian linear mixed-effects model with weakly informative priors. Predictors were contrast-coded (±0.5). Posterior distributions were inspected and uncertainty was quantified using 95% intervals and posterior probabilities of direction (PD). Bayes Factors were computed using Savage–Dickey ratios to assess evidence for or against each parameter relative to zero.
+
+The results provide strong evidence for a negative effect of semantic similarity (pd = 99.12%), suggesting that semantically similar cities tend to be drawn closer together. There is also moderate evidence for an effect of phonological similarity (pd = 92.00%), indicating a weaker tendency for phonologically similar cities to be perceived as closer. In contrast, there is little evidence for an interaction between semantic and phonological similarity (pd = 68.47%), suggesting that the effect of one type of similarity does not depend on the other. Bayes Factors show no strong evidence for or against the null.... this might be from insufficient sampling precision rather than true absence of effects????????? Overall, everything suggest that semantic similarity plays a primary role in spatial decisions, with weaker and less certain affects from phonological similarity and no clear interaction between the two.
+
+------------------------------------------------------------------------
+
+If you want, you can paste your actual coefficient estimates and I’ll **fill in the bracketed parts precisely** so it’s submission-ready.
+
+## OPTIONAL (h) compare your interpretation to the original findings
+
+YOUR COMPARISON HERE
+
+# References
+
+<!-- References will auto-populate in the refs div below -->
+
+::: {#refs}
+:::
